@@ -4,7 +4,9 @@ import requests
 import email.utils
 from time import mktime
 from datetime import datetime, timezone
-from xml.dom.minidom import Document
+from xml.dom.minidom import Document, parseString
+from xml.parsers.expat import ExpatError
+import os
 
 RSS_URLS = [
     "https://www.ft.com/stream/82645c31-4426-4ef5-99c9-9df6e0940c00?format=rss"
@@ -12,6 +14,7 @@ RSS_URLS = [
 
 ARCHIVE_PREFIX = "https://archive.is/o/ggFl1/"
 OUTPUT_FILE = "combined.xml"
+MAX_ENTRIES = 500
 
 HEADERS = {
     "User-Agent": (
@@ -47,7 +50,42 @@ def parse_entry_datetime(entry):
             return datetime.fromtimestamp(mktime(val), tz=timezone.utc)
     return datetime.now(tz=timezone.utc)
 
-def main():
+def load_existing_entries(filepath):
+    """Read existing combined.xml and return list of entry dicts keyed by guid."""
+    if not os.path.exists(filepath):
+        return {}
+    try:
+        with open(filepath, "rb") as f:
+            dom = parseString(f.read())
+    except ExpatError:
+        print("⚠️  Existing file could not be parsed, starting fresh.")
+        return {}
+
+    entries = {}
+    for item in dom.getElementsByTagName("item"):
+        def text(tag):
+            els = item.getElementsByTagName(tag)
+            return els[0].firstChild.nodeValue.strip() if els and els[0].firstChild else ""
+
+        guid = text("guid")
+        if not guid:
+            continue
+        pub = text("pubDate")
+        try:
+            dt = datetime(*email.utils.parsedate(pub)[:6], tzinfo=timezone.utc) if pub else datetime.now(tz=timezone.utc)
+        except Exception:
+            dt = datetime.now(tz=timezone.utc)
+
+        entries[guid] = {
+            "title":        text("title"),
+            "orig_link":    guid,
+            "archive_link": text("link"),
+            "summary":      text("description"),
+            "published_dt": dt,
+        }
+    return entries
+
+def build_xml(entries):
     doc = Document()
     rss = doc.createElement("rss")
     rss.setAttribute("version", "2.0")
@@ -59,31 +97,7 @@ def main():
     channel.appendChild(doc.createElement("link")).appendChild(doc.createTextNode("https://www.ft.com/world"))
     channel.appendChild(doc.createElement("description")).appendChild(doc.createTextNode("FT World feed with archive links"))
 
-    all_entries = []
-
-    for feed_url in RSS_URLS:
-        feed = fetch_feed(feed_url)
-        if feed is None:
-            continue
-        if feed.bozo and not feed.entries:
-            print(f"⚠️  Failed to parse: {feed_url} — {feed.bozo_exception}")
-            continue
-        print(f"ℹ️  {feed_url} → {len(feed.entries)} entries")
-        for entry in feed.entries:
-            link = entry.get("link", "")
-            if not link:
-                continue
-            all_entries.append({
-                "title":        entry.get("title", "Untitled"),
-                "orig_link":    link,
-                "archive_link": ARCHIVE_PREFIX + link,
-                "summary":      entry.get("summary") or entry.get("description") or "",
-                "published_dt": parse_entry_datetime(entry)
-            })
-
-    all_entries.sort(key=lambda x: x["published_dt"], reverse=True)
-
-    for it in all_entries:
+    for it in entries:
         item_el = doc.createElement("item")
         channel.appendChild(item_el)
         item_el.appendChild(doc.createElement("title")).appendChild(doc.createTextNode(it["title"]))
@@ -93,11 +107,53 @@ def main():
         item_el.appendChild(doc.createElement("pubDate")).appendChild(
             doc.createTextNode(email.utils.format_datetime(it["published_dt"]))
         )
+    return doc
 
+def main():
+    # 1. Load existing entries (keyed by orig_link/guid for dedup)
+    existing = load_existing_entries(OUTPUT_FILE)
+    print(f"ℹ️  Loaded {len(existing)} existing entries from {OUTPUT_FILE}")
+
+    # 2. Fetch new entries from feeds
+    new_count = 0
+    for feed_url in RSS_URLS:
+        feed = fetch_feed(feed_url)
+        if feed is None:
+            continue
+        if feed.bozo and not feed.entries:
+            print(f"⚠️  Failed to parse: {feed_url} — {feed.bozo_exception}")
+            continue
+        print(f"ℹ️  {feed_url} → {len(feed.entries)} entries fetched")
+        for entry in feed.entries:
+            link = entry.get("link", "")
+            if not link or link in existing:
+                continue
+            existing[link] = {
+                "title":        entry.get("title", "Untitled"),
+                "orig_link":    link,
+                "archive_link": ARCHIVE_PREFIX + link,
+                "summary":      entry.get("summary") or entry.get("description") or "",
+                "published_dt": parse_entry_datetime(entry),
+            }
+            new_count += 1
+
+    print(f"ℹ️  {new_count} new entries added")
+
+    # 3. Sort newest first
+    all_entries = sorted(existing.values(), key=lambda x: x["published_dt"], reverse=True)
+
+    # 4. Recycle: keep only the newest MAX_ENTRIES
+    if len(all_entries) > MAX_ENTRIES:
+        dropped = len(all_entries) - MAX_ENTRIES
+        all_entries = all_entries[:MAX_ENTRIES]
+        print(f"ℹ️  Recycled {dropped} oldest entries (cap: {MAX_ENTRIES})")
+
+    # 5. Write output
+    doc = build_xml(all_entries)
     with open(OUTPUT_FILE, "wb") as f:
         f.write(doc.toxml(encoding="utf-8"))
 
-    print(f"✅ {OUTPUT_FILE} generated with {len(all_entries)} articles.")
+    print(f"✅ {OUTPUT_FILE} written with {len(all_entries)} entries.")
 
 if __name__ == "__main__":
     main()

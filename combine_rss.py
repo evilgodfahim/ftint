@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 import feedparser
-from xml.dom.minidom import Document
 import email.utils
+from time import mktime
 from datetime import datetime, timezone
+from xml.dom.minidom import Document
 
 RSS_URLS = [
     "https://www.ft.com/rss/world"
@@ -11,57 +12,70 @@ RSS_URLS = [
 ARCHIVE_PREFIX = "https://archive.is/o/ggFl1/"
 OUTPUT_FILE = "combined.xml"
 
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    )
+}
+
 def parse_entry_datetime(entry):
-    if hasattr(entry, "published_parsed") and entry.published_parsed:
-        from time import mktime
-        ts = mktime(entry.published_parsed)
-        return datetime.fromtimestamp(ts, tz=timezone.utc)
-    if hasattr(entry, "updated_parsed") and entry.updated_parsed:
-        from time import mktime
-        ts = mktime(entry.updated_parsed)
-        return datetime.fromtimestamp(ts, tz=timezone.utc)
+    for field in ("published_parsed", "updated_parsed"):
+        val = entry.get(field)
+        if val:
+            return datetime.fromtimestamp(mktime(val), tz=timezone.utc)
     return datetime.now(tz=timezone.utc)
 
-doc = Document()
-rss = doc.createElement("rss")
-rss.setAttribute("version", "2.0")
-doc.appendChild(rss)
+def main():
+    doc = Document()
+    rss = doc.createElement("rss")
+    rss.setAttribute("version", "2.0")
+    doc.appendChild(rss)
 
-channel = doc.createElement("channel")
-rss.appendChild(channel)
-channel.appendChild(doc.createElement("title")).appendChild(doc.createTextNode("Project Syndicate Archive Feed"))
-channel.appendChild(doc.createElement("link")).appendChild(doc.createTextNode("https://www.project-syndicate.org/"))
-channel.appendChild(doc.createElement("description")).appendChild(doc.createTextNode("Combined feed with archive links"))
+    channel = doc.createElement("channel")
+    rss.appendChild(channel)
+    channel.appendChild(doc.createElement("title")).appendChild(doc.createTextNode("FT World Archive Feed"))
+    channel.appendChild(doc.createElement("link")).appendChild(doc.createTextNode("https://www.ft.com/world"))
+    channel.appendChild(doc.createElement("description")).appendChild(doc.createTextNode("FT World feed with archive links"))
 
-all_entries = []
+    all_entries = []
 
-for feed_url in RSS_URLS:
-    feed = feedparser.parse(feed_url)
-    for entry in feed.entries:
-        dt = parse_entry_datetime(entry)
-        all_entries.append({
-            "title": getattr(entry, "title", "Untitled"),
-            "orig_link": entry.link,
-            "archive_link": ARCHIVE_PREFIX + entry.link,
-            "summary": getattr(entry, "summary", "") or getattr(entry, "description", ""),
-            "published_dt": dt
-        })
+    for feed_url in RSS_URLS:
+        feed = feedparser.parse(feed_url, request_headers=HEADERS)
+        if feed.bozo and not feed.entries:
+            print(f"⚠️  Failed to fetch or parse: {feed_url} — {feed.bozo_exception}")
+            continue
+        print(f"ℹ️  {feed_url} → {len(feed.entries)} entries")
+        for entry in feed.entries:
+            link = entry.get("link", "")
+            if not link:
+                continue
+            all_entries.append({
+                "title":        entry.get("title", "Untitled"),
+                "orig_link":    link,
+                "archive_link": ARCHIVE_PREFIX + link,
+                "summary":      entry.get("summary") or entry.get("description") or "",
+                "published_dt": parse_entry_datetime(entry)
+            })
 
-# sort newest first
-all_entries.sort(key=lambda x: x["published_dt"], reverse=True)
+    all_entries.sort(key=lambda x: x["published_dt"], reverse=True)
 
-for it in all_entries:
-    item_el = doc.createElement("item")
-    channel.appendChild(item_el)
-    item_el.appendChild(doc.createElement("title")).appendChild(doc.createTextNode(it["title"]))
-    item_el.appendChild(doc.createElement("link")).appendChild(doc.createTextNode(it["archive_link"]))
-    item_el.appendChild(doc.createElement("guid")).appendChild(doc.createTextNode(it["orig_link"]))
-    item_el.appendChild(doc.createElement("description")).appendChild(doc.createTextNode(it["summary"]))
-    pubdate = email.utils.format_datetime(it["published_dt"])
-    item_el.appendChild(doc.createElement("pubDate")).appendChild(doc.createTextNode(pubdate))
+    for it in all_entries:
+        item_el = doc.createElement("item")
+        channel.appendChild(item_el)
+        item_el.appendChild(doc.createElement("title")).appendChild(doc.createTextNode(it["title"]))
+        item_el.appendChild(doc.createElement("link")).appendChild(doc.createTextNode(it["archive_link"]))
+        item_el.appendChild(doc.createElement("guid")).appendChild(doc.createTextNode(it["orig_link"]))
+        item_el.appendChild(doc.createElement("description")).appendChild(doc.createTextNode(it["summary"]))
+        item_el.appendChild(doc.createElement("pubDate")).appendChild(
+            doc.createTextNode(email.utils.format_datetime(it["published_dt"]))
+        )
 
-# write to file
-with open(OUTPUT_FILE, "wb") as f:
-    f.write(doc.toxml(encoding="utf-8"))
+    with open(OUTPUT_FILE, "wb") as f:
+        f.write(doc.toxml(encoding="utf-8"))
 
-print(f"✅ combined.xml generated with {len(all_entries)} articles.")
+    print(f"✅ {OUTPUT_FILE} generated with {len(all_entries)} articles.")
+
+if __name__ == "__main__":
+    main()

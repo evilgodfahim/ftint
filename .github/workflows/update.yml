@@ -24,7 +24,7 @@ jobs:
           python-version: "3.x"
 
       - name: Install dependencies
-        run: pip install feedparser --break-system-packages
+        run: pip install feedparser requests --break-system-packages
 
       - name: Run combine RSS script
         run: python combine_rss.py

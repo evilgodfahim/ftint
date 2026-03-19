@@ -8,7 +8,7 @@ RSS_URLS = [
     "https://www.ft.com/rss/world"
 ]
 
-ARCHIVE_PREFIX = "https://archive.is/o/wjemQ/"
+ARCHIVE_PREFIX = "https://archive.is/o/ggFl1/"
 OUTPUT_FILE = "combined.xml"
 
 def parse_entry_datetime(entry):

@@ -15,6 +15,7 @@ RSS_URLS = [
 ARCHIVE_PREFIX = "https://archive.is/o/ggFl1/"
 OUTPUT_FILE = "combined.xml"
 MAX_ENTRIES = 500
+MEDIA_NS = "http://search.yahoo.com/mrss/"
 
 HEADERS = {
     "User-Agent": (
@@ -50,6 +51,19 @@ def parse_entry_datetime(entry):
             return datetime.fromtimestamp(mktime(val), tz=timezone.utc)
     return datetime.now(tz=timezone.utc)
 
+def get_thumbnail(entry):
+    if hasattr(entry, "media_thumbnail") and entry.media_thumbnail:
+        return entry.media_thumbnail[0].get("url", "")
+    if hasattr(entry, "media_content") and entry.media_content:
+        for mc in entry.media_content:
+            if mc.get("medium") == "image" or mc.get("type", "").startswith("image/"):
+                return mc.get("url", "")
+    if hasattr(entry, "enclosures") and entry.enclosures:
+        for enc in entry.enclosures:
+            if enc.get("type", "").startswith("image/"):
+                return enc.get("href", "") or enc.get("url", "")
+    return ""
+
 def load_existing_entries(filepath):
     """Read existing combined.xml and return list of entry dicts keyed by guid."""
     if not os.path.exists(filepath):
@@ -76,12 +90,18 @@ def load_existing_entries(filepath):
         except Exception:
             dt = datetime.now(tz=timezone.utc)
 
+        thumbnail = ""
+        thumb_nodes = item.getElementsByTagName("media:thumbnail")
+        if thumb_nodes:
+            thumbnail = thumb_nodes[0].getAttribute("url")
+
         entries[guid] = {
             "title":        text("title"),
             "orig_link":    guid,
             "archive_link": text("link"),
             "summary":      text("description"),
             "published_dt": dt,
+            "thumbnail":    thumbnail,
         }
     return entries
 
@@ -89,6 +109,7 @@ def build_xml(entries):
     doc = Document()
     rss = doc.createElement("rss")
     rss.setAttribute("version", "2.0")
+    rss.setAttribute("xmlns:media", MEDIA_NS)
     doc.appendChild(rss)
 
     channel = doc.createElement("channel")
@@ -107,6 +128,10 @@ def build_xml(entries):
         item_el.appendChild(doc.createElement("pubDate")).appendChild(
             doc.createTextNode(email.utils.format_datetime(it["published_dt"]))
         )
+        if it.get("thumbnail"):
+            thumb_el = doc.createElementNS(MEDIA_NS, "media:thumbnail")
+            thumb_el.setAttribute("url", it["thumbnail"])
+            item_el.appendChild(thumb_el)
     return doc
 
 def main():
@@ -134,6 +159,7 @@ def main():
                 "archive_link": ARCHIVE_PREFIX + link,
                 "summary":      entry.get("summary") or entry.get("description") or "",
                 "published_dt": parse_entry_datetime(entry),
+                "thumbnail":    get_thumbnail(entry),
             }
             new_count += 1
 

@@ -52,16 +52,27 @@ def parse_entry_datetime(entry):
     return datetime.now(tz=timezone.utc)
 
 def get_thumbnail(entry):
-    if hasattr(entry, "media_thumbnail") and entry.media_thumbnail:
-        return entry.media_thumbnail[0].get("url", "")
-    if hasattr(entry, "media_content") and entry.media_content:
-        for mc in entry.media_content:
-            if mc.get("medium") == "image" or mc.get("type", "").startswith("image/"):
-                return mc.get("url", "")
-    if hasattr(entry, "enclosures") and entry.enclosures:
-        for enc in entry.enclosures:
-            if enc.get("type", "").startswith("image/"):
-                return enc.get("href", "") or enc.get("url", "")
+    mt = entry.get("media_thumbnail")
+    if mt and isinstance(mt, list) and mt[0].get("url"):
+        return mt[0]["url"]
+
+    mc = entry.get("media_content")
+    if mc and isinstance(mc, list):
+        for item in mc:
+            url = item.get("url", "")
+            if url and (item.get("medium") == "image" or item.get("type", "").startswith("image/")):
+                return url
+        # fallback: first media:content entry with any recognisable image URL
+        import re
+        first_url = mc[0].get("url", "")
+        if first_url and re.search(r'\.(jpg|jpeg|png|gif|webp|svg)(\?|$)', first_url, re.I):
+            return first_url
+
+    enc = entry.get("enclosures")
+    if enc and isinstance(enc, list):
+        for e in enc:
+            if e.get("type", "").startswith("image/"):
+                return e.get("href") or e.get("url", "")
     return ""
 
 def load_existing_entries(filepath):
